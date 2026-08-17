@@ -8,6 +8,8 @@ import datetime
 import argparse
 import numpy as np
 import librosa
+import tempfile
+import subprocess
 import matplotlib
 matplotlib.use('Agg') 
 import matplotlib.pyplot as plt
@@ -80,6 +82,22 @@ def create_text_clip(text, color, duration):
         return (x_pos, 45) 
     return txt_clip.with_position(scroll_pos)
 
+def load_audio_safely(audio_path, sr=22050, duration=None):
+    """Converts unsupported audio formats (like .m4a) to temp .wav before loading."""
+    if audio_path.lower().endswith(('.wav', '.flac', '.ogg')):
+        return librosa.load(audio_path, sr=sr, duration=duration)
+    
+    # Convert .m4a to temp wav file via ffmpeg
+    temp_wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False).name
+    try:
+        cmd = ["ffmpeg", "-y", "-i", audio_path, "-ar", str(sr), temp_wav]
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        y, sr_out = librosa.load(temp_wav, sr=sr, duration=duration)
+        return y, sr_out
+    finally:
+        if os.path.exists(temp_wav):
+            os.remove(temp_wav)
+
 def create_audiogram(audio_path, bg_image_path, style="mirror", test_mode=False):
     monitor = PerformanceMonitor(style)
     output_path = f"podcast_{style}_optimized.mp4"
@@ -92,7 +110,8 @@ def create_audiogram(audio_path, bg_image_path, style="mirror", test_mode=False)
     duration = min(10, audio.duration) if test_mode else audio.duration
     if test_mode: audio = audio.subclipped(0, duration)
     
-    y, sr = librosa.load(audio_path, sr=22050, duration=duration if test_mode else None)
+    # Updated to safely convert .m4a files before librosa analysis
+    y, sr = load_audio_safely(audio_path, sr=22050, duration=duration if test_mode else None)
     fps = 24
     hop_length = int(sr / fps)
     rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=hop_length)[0]

@@ -1,6 +1,7 @@
 psutil
-moviepy>=2.0.0
+moviepy
 librosa
 numpy
 matplotlib
 soundfile
+audioread
