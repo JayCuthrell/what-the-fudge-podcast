@@ -83,20 +83,31 @@ def create_text_clip(text, color, duration):
     return txt_clip.with_position(scroll_pos)
 
 def load_audio_safely(audio_path, sr=22050, duration=None):
-    """Converts unsupported audio formats (like .m4a) to temp .wav before loading."""
-    if audio_path.lower().endswith(('.wav', '.flac', '.ogg')):
-        return librosa.load(audio_path, sr=sr, duration=duration)
+    """Normalizes to broadcast standards and converts to .wav for librosa analysis."""
+    print(f"--- 0. Normalizing Audio to Broadcast Standards (-16 LUFS) ---")
     
-    # Convert .m4a to temp wav file via ffmpeg
-    temp_wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False).name
+    # We must save as WAV so librosa and moviepy can read it reliably after FFmpeg processing
+    normalized_wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False).name
+    
     try:
-        cmd = ["ffmpeg", "-y", "-i", audio_path, "-ar", str(sr), temp_wav]
+        # Apply loudnorm filter and convert format simultaneously
+        cmd = [
+            "ffmpeg", "-y", "-i", audio_path, 
+            "-af", "loudnorm=I=-16:LRA=11:TP=-1.5", 
+            "-ar", str(sr), 
+            normalized_wav
+        ]
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-        y, sr_out = librosa.load(temp_wav, sr=sr, duration=duration)
-        return y, sr_out
-    finally:
-        if os.path.exists(temp_wav):
-            os.remove(temp_wav)
+        
+        # Load the newly normalized audio into librosa
+        y, sr_out = librosa.load(normalized_wav, sr=sr, duration=duration)
+        return y, sr_out, normalized_wav
+        
+    except subprocess.CalledProcessError as e:
+        print(f"Error during audio normalization: {e}")
+        # Fallback to original audio if normalization fails
+        y, sr_out = librosa.load(audio_path, sr=sr, duration=duration)
+        return y, sr_out, audio_path
 
 def create_audiogram(audio_path, bg_image_path, style="mirror", test_mode=False):
     monitor = PerformanceMonitor(style)
@@ -106,12 +117,16 @@ def create_audiogram(audio_path, bg_image_path, style="mirror", test_mode=False)
     brand_orange = '#f38c3c' 
     
     print(f"--- 1. Loading Audio & Analyzing ---")
-    audio = AudioFileClip(audio_path)
+    
+    # Safely convert, normalize, and load the audio first
+    duration_to_load = 10 if test_mode else None
+    y, sr, normalized_audio_path = load_audio_safely(audio_path, sr=22050, duration=duration_to_load)
+    
+    # Load the NORMALIZED audio file into MoviePy
+    audio = AudioFileClip(normalized_audio_path)
     duration = min(10, audio.duration) if test_mode else audio.duration
     if test_mode: audio = audio.subclipped(0, duration)
     
-    # Updated to safely convert .m4a files before librosa analysis
-    y, sr = load_audio_safely(audio_path, sr=22050, duration=duration if test_mode else None)
     fps = 24
     hop_length = int(sr / fps)
     rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=hop_length)[0]
@@ -182,6 +197,13 @@ def create_audiogram(audio_path, bg_image_path, style="mirror", test_mode=False)
     
     stats = monitor.get_report(duration)
     print(f"\n🚀 Render Ratio: {stats['render_to_audio_ratio']}:1 | Avg CPU: {stats['avg_cpu_percent']}% | Stats saved to render_stats.csv")
+
+    # Clean up the temporary normalized wav file
+    if normalized_audio_path != audio_path and os.path.exists(normalized_audio_path):
+        try:
+            os.remove(normalized_audio_path)
+        except Exception as e:
+            print(f"Warning: Could not remove temporary file {normalized_audio_path}: {e}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
