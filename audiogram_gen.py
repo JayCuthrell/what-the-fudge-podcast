@@ -82,15 +82,13 @@ def create_text_clip(text, color, duration):
         return (x_pos, 45) 
     return txt_clip.with_position(scroll_pos)
 
-def load_audio_safely(audio_path, sr=22050, duration=None):
-    """Normalizes to broadcast standards and converts to .wav for librosa analysis."""
+def load_audio_safely(audio_path, sr=22050, duration=None, fast_mode=False):
+    """Normalizes to broadcast standards. Skips librosa analysis in fast mode."""
     print(f"--- 0. Normalizing Audio to Broadcast Standards (-16 LUFS) ---")
     
-    # We must save as WAV so librosa and moviepy can read it reliably after FFmpeg processing
     normalized_wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False).name
     
     try:
-        # Apply loudnorm filter and convert format simultaneously
         cmd = [
             "ffmpeg", "-y", "-i", audio_path, 
             "-af", "loudnorm=I=-16:LRA=11:TP=-1.5", 
@@ -99,98 +97,107 @@ def load_audio_safely(audio_path, sr=22050, duration=None):
         ]
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
         
-        # Load the newly normalized audio into librosa
+        # Bypass librosa completely if fast_mode is enabled
+        if fast_mode:
+            return None, None, normalized_wav
+
         y, sr_out = librosa.load(normalized_wav, sr=sr, duration=duration)
         return y, sr_out, normalized_wav
         
     except subprocess.CalledProcessError as e:
         print(f"Error during audio normalization: {e}")
-        # Fallback to original audio if normalization fails
+        if fast_mode:
+            return None, None, audio_path
         y, sr_out = librosa.load(audio_path, sr=sr, duration=duration)
         return y, sr_out, audio_path
 
-def create_audiogram(audio_path, bg_image_path, style="mirror", test_mode=False):
-    monitor = PerformanceMonitor(style)
-    output_path = f"podcast_{style}_optimized.mp4"
+def create_audiogram(audio_path, bg_image_path, style="mirror", test_mode=False, fast_render=False):
+    monitor = PerformanceMonitor(style if not fast_render else "fast_static")
+    output_path = f"podcast_{style}_optimized.mp4" if not fast_render else "podcast_fast_render.mp4"
     now = datetime.datetime.now()
     date_label = f"Now Playing Episode for {now.strftime('%B %d %Y')}"
     brand_orange = '#f38c3c' 
     
     print(f"--- 1. Loading Audio & Analyzing ---")
     
-    # Safely convert, normalize, and load the audio first
     duration_to_load = 10 if test_mode else None
-    y, sr, normalized_audio_path = load_audio_safely(audio_path, sr=22050, duration=duration_to_load)
     
-    # Load the NORMALIZED audio file into MoviePy
+    # Use fast_mode to skip librosa processing
+    y, sr, normalized_audio_path = load_audio_safely(audio_path, sr=22050, duration=duration_to_load, fast_mode=fast_render)
+    
     audio = AudioFileClip(normalized_audio_path)
     duration = min(10, audio.duration) if test_mode else audio.duration
     if test_mode: audio = audio.subclipped(0, duration)
     
     fps = 24
-    hop_length = int(sr / fps)
-    rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=hop_length)[0]
-    if np.max(rms) > 0: rms = (rms / np.max(rms))
+    
+    if not fast_render:
+        print(f"--- 2. Pre-rendering Waveform Cache ---")
+        hop_length = int(sr / fps)
+        rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=hop_length)[0]
+        if np.max(rms) > 0: rms = (rms / np.max(rms))
 
-    print(f"--- 2. Pre-rendering Waveform Cache (Faster Step 2) ---")
-    # Reduced points for faster pre-rendering
-    n_points = 100 
-    x_axis = np.linspace(0, 10, n_points)
-    fig, ax = plt.subplots(figsize=(12, 4), dpi=80, facecolor='none')
-    ax.set_facecolor('none')
-    
-    waveform_frames = []
-    y_zeros = np.zeros(n_points)
-    
-    # Setup plot objects once
-    if style == "mirror":
-        line_main_t, = ax.plot(x_axis, y_zeros, color=brand_orange, linewidth=3, zorder=3)
-        line_main_b, = ax.plot(x_axis, -y_zeros, color=brand_orange, linewidth=3, zorder=3)
-        fill = ax.fill_between(x_axis, -y_zeros, y_zeros, color=brand_orange, alpha=0.12)
-        ax.set_ylim(-1.5, 1.5)
-    else:
-        line_main, = ax.plot(x_axis, y_zeros, color=brand_orange, linewidth=4)
-        fill = ax.fill_between(x_axis, 0, y_zeros, color=brand_orange, alpha=0.15)
-        ax.set_ylim(0, 1.5)
-    
-    ax.axis('off')
-    fig.tight_layout(pad=0)
-
-    # Fast caching loop to avoid drawing during export
-    for idx in range(len(rms)):
-        new_y = [max(0.01, rms[max(0, min(len(rms)-1, idx + (i - n_points//2)))] * 1.2) for i in range(n_points)]
-        fill.remove()
-        if style == "mirror":
-            line_main_t.set_ydata(new_y)
-            line_main_b.set_ydata([-v for v in new_y])
-            fill = ax.fill_between(x_axis, [-v for v in new_y], new_y, color=brand_orange, alpha=0.12)
-        else:
-            line_main.set_ydata(new_y)
-            fill = ax.fill_between(x_axis, 0, new_y, color=brand_orange, alpha=0.15)
+        n_points = 100 
+        x_axis = np.linspace(0, 10, n_points)
+        fig, ax = plt.subplots(figsize=(12, 4), dpi=80, facecolor='none')
+        ax.set_facecolor('none')
         
-        waveform_frames.append(fig_to_numpy_transparent(fig))
-        if idx % 100 == 0: monitor.sample()
-    plt.close(fig)
+        waveform_frames = []
+        y_zeros = np.zeros(n_points)
+        
+        if style == "mirror":
+            line_main_t, = ax.plot(x_axis, y_zeros, color=brand_orange, linewidth=3, zorder=3)
+            line_main_b, = ax.plot(x_axis, -y_zeros, color=brand_orange, linewidth=3, zorder=3)
+            fill = ax.fill_between(x_axis, -y_zeros, y_zeros, color=brand_orange, alpha=0.12)
+            ax.set_ylim(-1.5, 1.5)
+        else:
+            line_main, = ax.plot(x_axis, y_zeros, color=brand_orange, linewidth=4)
+            fill = ax.fill_between(x_axis, 0, y_zeros, color=brand_orange, alpha=0.15)
+            ax.set_ylim(0, 1.5)
+        
+        ax.axis('off')
+        fig.tight_layout(pad=0)
 
-    print(f"--- 3. Compositing Master (Pulse Disabled) ---")
-    bg = ImageClip(bg_image_path).with_duration(duration).resized(width=1920)
-    if bg.h > 1080: bg = bg.cropped(y_center=bg.h/2, height=1080)
+        for idx in range(len(rms)):
+            new_y = [max(0.01, rms[max(0, min(len(rms)-1, idx + (i - n_points//2)))] * 1.2) for i in range(n_points)]
+            fill.remove()
+            if style == "mirror":
+                line_main_t.set_ydata(new_y)
+                line_main_b.set_ydata([-v for v in new_y])
+                fill = ax.fill_between(x_axis, [-v for v in new_y], new_y, color=brand_orange, alpha=0.12)
+            else:
+                line_main.set_ydata(new_y)
+                fill = ax.fill_between(x_axis, 0, new_y, color=brand_orange, alpha=0.15)
+            
+            waveform_frames.append(fig_to_numpy_transparent(fig))
+            if idx % 100 == 0: monitor.sample()
+        plt.close(fig)
+
+        print(f"--- 3. Compositing Master (Animations Enabled) ---")
+        bg = ImageClip(bg_image_path).with_duration(duration).resized(width=1920)
+        if bg.h > 1080: bg = bg.cropped(y_center=bg.h/2, height=1080)
+        
+        wf_y = 750 if style == "mirror" else 800
+        waveform_clip = VideoClip(lambda t: waveform_frames[min(int(t*fps), len(waveform_frames)-1)], duration=duration).with_position(("center", wf_y))
+        scrolling_text = create_text_clip(date_label, brand_orange, duration)
+        
+        final = CompositeVideoClip([bg, scrolling_text, waveform_clip]).with_audio(audio)
     
-    wf_y = 750 if style == "mirror" else 800
-    # Use cached frames for near-instant rendering
-    waveform_clip = VideoClip(lambda t: waveform_frames[min(int(t*fps), len(waveform_frames)-1)], duration=duration).with_position(("center", wf_y))
-    scrolling_text = create_text_clip(date_label, brand_orange, duration)
-    
-    # Pulse disabled for maximum speed
-    final = CompositeVideoClip([bg, scrolling_text, waveform_clip]).with_audio(audio)
+    else:
+        print(f"--- 2 & 3. Skipping Animations for Fast Render ---")
+        bg = ImageClip(bg_image_path).with_duration(duration).resized(width=1920)
+        if bg.h > 1080: bg = bg.cropped(y_center=bg.h/2, height=1080)
+        
+        # Just attach the normalized audio directly to the background image
+        final = bg.with_audio(audio)
 
     print(f"--- 4. Exporting with Hardware Acceleration ---")
     final.write_videofile(
         output_path, 
         fps=fps, 
-        codec="h264_videotoolbox", # M1 Hardware Encoder
+        codec="h264_videotoolbox", 
         audio_codec="aac", 
-        bitrate="3000k",           # Optimized bitrate
+        bitrate="3000k",           
         threads=8, 
         preset="ultrafast" if test_mode else "medium"
     )
@@ -198,7 +205,6 @@ def create_audiogram(audio_path, bg_image_path, style="mirror", test_mode=False)
     stats = monitor.get_report(duration)
     print(f"\n🚀 Render Ratio: {stats['render_to_audio_ratio']}:1 | Avg CPU: {stats['avg_cpu_percent']}% | Stats saved to render_stats.csv")
 
-    # Clean up the temporary normalized wav file
     if normalized_audio_path != audio_path and os.path.exists(normalized_audio_path):
         try:
             os.remove(normalized_audio_path)
@@ -210,5 +216,7 @@ if __name__ == "__main__":
     parser.add_argument("audio"); parser.add_argument("image")
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--style", choices=["continuous", "mirror"], default="mirror")
+    parser.add_argument("--fast-render", action="store_true", help="Skip animations and render a static image with audio.")
     args = parser.parse_args()
-    create_audiogram(args.audio, args.image, style=args.style, test_mode=args.test)
+    
+    create_audiogram(args.audio, args.image, style=args.style, test_mode=args.test, fast_render=args.fast_render)
