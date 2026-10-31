@@ -9,6 +9,9 @@
 *.mpv
 *.avi
 
+# Secrets
+*.json
+
 # stats
 *.csv
 *.tsv
