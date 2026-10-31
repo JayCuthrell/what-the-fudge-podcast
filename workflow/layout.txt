@@ -1,0 +1,14 @@
+workflow/
+├── audio.py            # Sounddevice mic recorder and FFmpeg loudnorm mastering
+├── camera.py           # Webcam support
+├── config.py           # Unified settings, styling constants, and hardware flags
+├── content.py          # Markdown parsing and chapter formatting
+├── uploader.py         # YouTube OAuth authentication and video uploading
+├── test-pipeline.py    # Test script
+├── visuals.py          # Pillow slide renderer with segmented progress bars
+├── video.py            # FFmpeg assembly, timeline runner, and hardware encoding
+└── main.py             # CLI orchestrator and interactive teleprompter
+└── setup.sh            # Loads requirements.txt
+└── requirements.txt    # python requirements
+└── README.md           # README
+└── topics.md           # example topics for test-pipeline.py
