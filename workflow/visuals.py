@@ -20,14 +20,52 @@ class Rect:
     def height(self) -> int:
         return self.y1 - self.y0
 
+def get_grid_tile(position: str, tile_w: int, tile_h: int, canvas_w: int = 1920, canvas_h: int = 1080) -> Rect:
+    col_w, row_h = canvas_w // 3, canvas_h // 3
+    grid_map = {
+        "top-left":      (0, 0), "top-center":    (0, 1), "top-right":     (0, 2),
+        "middle-left":   (1, 0), "center":        (1, 1), "middle-right":  (1, 2),
+        "bottom-left":   (2, 0), "bottom-center": (2, 1), "bottom-right": (2, 2),
+    }
+    row, col = grid_map.get(position, (0, 0))
+    x0 = col * col_w + (col_w - tile_w) // 2
+    y0 = row * row_h + (row_h - tile_h) // 2
+    return Rect(x0, y0, x0 + tile_w, y0 + tile_h)
+
+def resolve_unoccupied_tiles(webcam_pos: str, cfg: PipelineConfig) -> tuple[str | None, str | None]:
+    """Finds all available tiles in the sidebar/banner and assigns Logo 1 and Logo 2."""
+    pos1 = cfg.logo_position
+    pos2 = cfg.logo2_position
+
+    # Identify open slots depending on which column/row the webcam occupies
+    if webcam_pos in ("top-left", "middle-left", "bottom-left"):
+        available = [t for t in ("top-left", "middle-left", "bottom-left") if t != webcam_pos]
+    elif webcam_pos in ("top-right", "middle-right", "bottom-right"):
+        available = [t for t in ("top-right", "middle-right", "bottom-right") if t != webcam_pos]
+    elif webcam_pos == "top-center":
+        available = ["top-left", "top-right"]
+    elif webcam_pos == "bottom-center":
+        available = ["bottom-left", "bottom-right"]
+    else:
+        available = ["top-right", "middle-right"]
+
+    resolved_1 = None
+    if pos1 != "none":
+        resolved_1 = available[0] if pos1 == "auto" and len(available) > 0 else (pos1 if pos1 != webcam_pos else None)
+
+    resolved_2 = None
+    if pos2 != "none":
+        if pos2 == "auto":
+            remaining = [t for t in available if t != resolved_1]
+            resolved_2 = remaining[0] if remaining else None
+        else:
+            resolved_2 = pos2 if (pos2 != webcam_pos and pos2 != resolved_1) else None
+
+    return resolved_1, resolved_2
+
 def calculate_grid_layout(position: str, cfg: PipelineConfig) -> tuple[Rect, Rect | None]:
-    """
-    Computes (card_rect, cam_rect) across a 3x3 Rule of Thirds grid.
-    Columns: 0-640, 640-1280, 1280-1920
-    Rows:    0-360, 360-720,  720-1080
-    """
     if position == "none":
-        return Rect(160, 140, cfg.width - 160, cfg.height - 140), None
+        return Rect(160, 80, cfg.width - 160, cfg.height - 80), None
 
     col_w, row_h = cfg.width // 3, cfg.height // 3
     grid_map = {
@@ -37,98 +75,172 @@ def calculate_grid_layout(position: str, cfg: PipelineConfig) -> tuple[Rect, Rec
     }
 
     row, col = grid_map.get(position, (2, 2))
+    cam_rect = get_grid_tile(position, cfg.cam_box_w, cfg.cam_box_h, cfg.width, cfg.height)
 
-    # Center camera box inside cell
-    cam_x0 = col * col_w + (col_w - cfg.cam_box_w) // 2
-    cam_y0 = row * row_h + (row_h - cfg.cam_box_h) // 2
-    cam_rect = Rect(cam_x0, cam_y0, cam_x0 + cfg.cam_box_w, cam_y0 + cfg.cam_box_h)
-
-    # Shift card to remaining screen area
-    if col == 2:  # Camera on Right -> Card occupies Left 2 columns
-        card_rect = Rect(80, 100, 1240, cfg.height - 100)
-    elif col == 0:  # Camera on Left -> Card occupies Right 2 columns
-        card_rect = Rect(680, 100, cfg.width - 80, cfg.height - 100)
-    elif row == 0:  # Camera Top-Center -> Card occupies Bottom 2 rows
-        card_rect = Rect(120, 380, cfg.width - 120, cfg.height - 100)
-    elif row == 2:  # Camera Bottom-Center -> Card occupies Top 2 rows
-        card_rect = Rect(120, 100, cfg.width - 120, 700)
-    else:  # Center -> Card docks to Left 2/3
-        card_rect = Rect(80, 100, 1240, cfg.height - 100)
+    if col == 2:
+        card_rect = Rect(80, 80, 1240, cfg.height - 80)
+    elif col == 0:
+        card_rect = Rect(680, 80, cfg.width - 80, cfg.height - 80)
+    elif row == 0:
+        card_rect = Rect(100, 380, cfg.width - 100, cfg.height - 80)
+    elif row == 2:
+        card_rect = Rect(100, 80, cfg.width - 100, 700)
+    else:
+        card_rect = Rect(80, 80, 1240, cfg.height - 80)
 
     return card_rect, cam_rect
 
-def _load_font(path: str, size: int) -> ImageFont.FreeTypeFont:
-    try:
-        return ImageFont.truetype(path, size)
-    except Exception:
-        return ImageFont.load_default()
+def _load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
+    font_paths = [
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/System/Library/Fonts/SFCompact.ttf",
+        "/Library/Fonts/Arial.ttf"
+    ]
+    for path in font_paths:
+        try:
+            return ImageFont.truetype(path, size, index=1 if bold else 0)
+        except Exception:
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                continue
+    return ImageFont.load_default()
+
+def draw_logo_tile(canvas: Image.Image, logo_path: Path, tile_rect: Rect, cfg: PipelineConfig, scale: int = 1):
+    if not logo_path.exists():
+        return
+
+    draw = ImageDraw.Draw(canvas)
+    x0, y0 = tile_rect.x0 * scale, tile_rect.y0 * scale
+    x1, y1 = tile_rect.x1 * scale, tile_rect.y1 * scale
+
+    if cfg.logo_border:
+        draw.rounded_rectangle(
+            [x0 - 4 * scale, y0 - 4 * scale, x1 + 4 * scale, y1 + 4 * scale],
+            radius=20 * scale,
+            fill=cfg.logo_card_bg,
+            outline=cfg.cam_border_color,
+            width=2 * scale
+        )
+
+    logo = Image.open(logo_path).convert("RGBA")
+    max_w = (tile_rect.width - 32) * scale
+    max_h = (tile_rect.height - 32) * scale
+    logo.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
+
+    offset_x = x0 + ((tile_rect.width * scale) - logo.width) // 2
+    offset_y = y0 + ((tile_rect.height * scale) - logo.height) // 2
+    canvas.paste(logo, (offset_x, offset_y), logo)
 
 def render_topic_slide(
     topic: Topic,
     total_topics: int,
     output_path: Path,
     cfg: PipelineConfig,
-    position: str = "bottom-right"
+    position: str = "bottom-left"
 ) -> Path:
-    img = Image.new("RGB", (cfg.width, cfg.height), cfg.bg_color)
+    # 2x supersampling for clean anti-aliasing
+    scale = 2
+    canvas_w, canvas_h = cfg.width * scale, cfg.height * scale
+    img = Image.new("RGB", (canvas_w, canvas_h), cfg.bg_color)
     draw = ImageDraw.Draw(img)
 
     card_rect, cam_rect = calculate_grid_layout(position, cfg)
 
-    font_pill = _load_font("/System/Library/Fonts/Helvetica.ttc", 26)
-    font_title = _load_font("/System/Library/Fonts/Helvetica.ttc", 50)
-    font_url = _load_font("/System/Library/Fonts/Helvetica.ttc", 26)
+    font_pill = _load_font(24 * scale, bold=True)
+    font_title = _load_font(52 * scale, bold=True)
+    font_blurb = _load_font(30 * scale, bold=False)
+    font_url = _load_font(26 * scale, bold=False)
 
-    # 1. Draw Slide Content Card
-    draw.rounded_rectangle(
-        [card_rect.x0, card_rect.y0, card_rect.x1, card_rect.y1],
-        radius=24,
-        fill=cfg.card_color
-    )
+    # 1. Main Content Card
+    cx0, cy0 = card_rect.x0 * scale, card_rect.y0 * scale
+    cx1, cy1 = card_rect.x1 * scale, card_rect.y1 * scale
+    draw.rounded_rectangle([cx0, cy0, cx1, cy1], radius=24 * scale, fill=cfg.card_color)
 
-    # 2. Draw Camera Bezel Slot (if webcam enabled)
+    # 2. Camera Slot Bezel
     if cam_rect:
+        cam_x0, cam_y0 = cam_rect.x0 * scale, cam_rect.y0 * scale
+        cam_x1, cam_y1 = cam_rect.x1 * scale, cam_rect.y1 * scale
         draw.rounded_rectangle(
-            [cam_rect.x0 - 4, cam_rect.y0 - 4, cam_rect.x1 + 4, cam_rect.y1 + 4],
-            radius=18,
+            [cam_x0 - 4 * scale, cam_y0 - 4 * scale, cam_x1 + 4 * scale, cam_y1 + 4 * scale],
+            radius=20 * scale,
             outline=cfg.cam_border_color,
-            width=3
+            width=3 * scale
         )
 
-    # 3. Dynamic Segmented Progress Bar (fitted to card width)
-    bar_y0 = card_rect.y0 + 36
-    bar_height = 6
-    bar_x0 = card_rect.x0 + 44
-    bar_x1 = card_rect.x1 - 44
+    # 3. Resolve & Draw Both Logo Tiles
+    pos1, pos2 = resolve_unoccupied_tiles(position, cfg)
+    if pos1:
+        tile1 = get_grid_tile(pos1, cfg.cam_box_w, cfg.cam_box_h, cfg.width, cfg.height)
+        draw_logo_tile(img, cfg.logo_path, tile1, cfg, scale=scale)
+    if pos2:
+        tile2 = get_grid_tile(pos2, cfg.cam_box_w, cfg.cam_box_h, cfg.width, cfg.height)
+        draw_logo_tile(img, cfg.logo2_path, tile2, cfg, scale=scale)
+
+    # 4. Segmented Progress Bar
+    bar_margin = 50 * scale
+    bar_y0 = cy0 + 40 * scale
+    bar_height = 8 * scale
+    bar_x0 = cx0 + bar_margin
+    bar_x1 = cx1 - bar_margin
     total_bar_w = bar_x1 - bar_x0
-    gap = 10
+    gap = 12 * scale
     segment_w = (total_bar_w - (gap * (total_topics - 1))) / total_topics
 
     for seg_idx in range(total_topics):
         s_start = bar_x0 + seg_idx * (segment_w + gap)
         s_end = s_start + segment_w
         seg_color = cfg.accent_color_rgb if seg_idx <= topic.index else cfg.inactive_seg_color
-        draw.rounded_rectangle([s_start, bar_y0, s_end, bar_y0 + bar_height], radius=3, fill=seg_color)
+        draw.rounded_rectangle([s_start, bar_y0, s_end, bar_y0 + bar_height], radius=4 * scale, fill=seg_color)
 
-    # 4. Topic Pill Badge
+    # 5. Pill Badge
     pill_text = f"TOPIC {topic.index + 1:02d} OF {total_topics:02d}"
-    pill_x, pill_y = card_rect.x0 + 44, bar_y0 + 32
-    draw.rounded_rectangle([pill_x, pill_y, pill_x + 210, pill_y + 38], radius=10, fill=cfg.accent_color_rgb)
-    draw.text((pill_x + 18, pill_y + 6), pill_text, fill=(255, 255, 255), font=font_pill)
+    t_bbox = draw.textbbox((0, 0), pill_text, font=font_pill)
+    t_width = t_bbox[2] - t_bbox[0]
+    t_height = t_bbox[3] - t_bbox[1]
 
-    # 5. Dynamically Wrapped Title (scaled to card width)
-    wrap_chars = max(24, int((card_rect.width - 100) / 26))
-    wrapped = textwrap.wrap(topic.title, width=wrap_chars)
-    title_start_y = pill_y + 70
-    for i, line in enumerate(wrapped[:4]):
-        draw.text((card_rect.x0 + 44, title_start_y + (i * 64)), line, fill=cfg.text_color, font=font_title)
+    pad_h = 24 * scale
+    pad_v = 12 * scale
+    pill_box_w = t_width + (pad_h * 2)
+    pill_box_h = t_height + (pad_v * 2)
 
-    # 6. Source URL Citation
+    pill_x0 = cx0 + bar_margin
+    pill_y0 = bar_y0 + 36 * scale
+    pill_x1 = pill_x0 + pill_box_w
+    pill_y1 = pill_y0 + pill_box_h
+
+    draw.rounded_rectangle([pill_x0, pill_y0, pill_x1, pill_y1], radius=12 * scale, fill=cfg.accent_color_rgb)
+    draw.text((pill_x0 + pad_h, pill_y0 + pad_v - (2 * scale)), pill_text, fill=(255, 255, 255), font=font_pill)
+
+    # 6. Headline Title
+    wrap_w = max(26, int((card_rect.width - 100) / 28))
+    wrapped_title = textwrap.wrap(topic.title, width=wrap_w)
+    current_y = pill_y1 + 36 * scale
+    line_spacing = 68 * scale
+
+    for line in wrapped_title[:3]:
+        draw.text((cx0 + bar_margin, current_y), line, fill=cfg.text_color, font=font_title)
+        current_y += line_spacing
+
+    # 7. Discussion Blurb
+    if topic.blurb:
+        blurb_clean = topic.blurb.strip()
+        if blurb_clean.lower().startswith("blurb:"):
+            blurb_clean = blurb_clean[6:].strip()
+
+        wrapped_blurb = textwrap.wrap(blurb_clean, width=max(36, int((card_rect.width - 100) / 18)))
+        current_y += 30 * scale
+        for line in wrapped_blurb[:4]:
+            draw.text((cx0 + bar_margin, current_y), line, fill=(185, 190, 200), font=font_blurb)
+            current_y += 46 * scale
+
+    # 8. Source Citation
     if topic.url:
-        max_url_len = int(card_rect.width / 18)
+        max_url_len = int(card_rect.width / 16)
         clean_url = (topic.url[:max_url_len] + '...') if len(topic.url) > max_url_len else topic.url
-        draw.text((card_rect.x0 + 44, card_rect.y1 - 60), f"Source: {clean_url}", fill=cfg.sub_color, font=font_url)
+        draw.text((cx0 + bar_margin, cy1 - 70 * scale), f"Source: {clean_url}", fill=cfg.sub_color, font=font_url)
 
+    final_img = img.resize((cfg.width, cfg.height), resample=Image.Resampling.LANCZOS)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    img.save(str(output_path))
+    final_img.save(str(output_path), quality=95)
     return output_path

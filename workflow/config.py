@@ -10,7 +10,6 @@ VALID_WEBCAM_POSITIONS = (
 
 @dataclass(frozen=True)
 class PipelineConfig:
-    # Paths
     work_dir: Path = Path(".")
     topics_file: Path = Path("topics.md")
     slides_dir: Path = Path("rendered_slides")
@@ -19,6 +18,14 @@ class PipelineConfig:
     raw_webcam_path: Path = Path("raw_webcam.mp4")
     output_video_path: Path = Path("final_video.mp4")
     client_secrets_path: Path = Path("client_secrets.json")
+
+    # Brand Graphics
+    logo_path: Path = Path("wtf-podcast.png")       # Primary text logo
+    logo_position: str = "auto"                    # "auto", specific tile, or "none"
+    logo2_path: Path = Path("wtf-badge.png")        # Secondary graphic / illustration badge
+    logo2_position: str = "auto"                   # "auto", specific tile, or "none"
+    logo_card_bg: tuple = (28, 31, 38)
+    logo_border: bool = True
 
     # Audio Loudness Targets (YouTube Standards)
     target_lufs: float = -14.0
@@ -38,11 +45,11 @@ class PipelineConfig:
     text_color: tuple = (245, 245, 247)
     sub_color: tuple = (156, 163, 175)
 
-    # Webcam Inset Dimensions (Rule of Thirds: 560x315 inside 640x360 cell)
+    # Webcam Inset Dimensions
     cam_box_w: int = 560
     cam_box_h: int = 315
-    webcam_position: str = "bottom-right"
-    webcam_device: str = "default"                 # macOS AVFoundation device name or index
+    webcam_position: str = "bottom-left"
+    webcam_device: str = "2"                       # "2" for iPhone Continuity Camera, "0" for FaceTime HD
 
     # Encoding
     video_fps: int = 30
