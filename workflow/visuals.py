@@ -3,6 +3,7 @@ import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
+
 from config import PipelineConfig
 from content import Topic
 
@@ -34,32 +35,15 @@ def get_grid_tile(position: str, tile_w: int, tile_h: int, canvas_w: int = 1920,
     return Rect(x0, y0, x0 + tile_w, y0 + tile_h)
 
 def resolve_unoccupied_tiles(webcam_pos: str, cfg: PipelineConfig) -> tuple[str | None, str | None]:
-    pos1 = cfg.logo_position
-    pos2 = cfg.logo2_position
-
     if webcam_pos in ("top-left", "middle-left", "bottom-left"):
         available = [t for t in ("top-left", "middle-left", "bottom-left") if t != webcam_pos]
     elif webcam_pos in ("top-right", "middle-right", "bottom-right"):
         available = [t for t in ("top-right", "middle-right", "bottom-right") if t != webcam_pos]
-    elif webcam_pos == "top-center":
-        available = ["top-left", "top-right"]
-    elif webcam_pos == "bottom-center":
-        available = ["bottom-left", "bottom-right"]
     else:
         available = ["top-right", "middle-right"]
 
-    resolved_1 = None
-    if pos1 != "none":
-        resolved_1 = available[0] if pos1 == "auto" and len(available) > 0 else (pos1 if pos1 != webcam_pos else None)
-
-    resolved_2 = None
-    if pos2 != "none":
-        if pos2 == "auto":
-            remaining = [t for t in available if t != resolved_1]
-            resolved_2 = remaining[0] if remaining else None
-        else:
-            resolved_2 = pos2 if (pos2 != webcam_pos and pos2 != resolved_1) else None
-
+    resolved_1 = available[0] if len(available) > 0 and cfg.logo_position != "none" else None
+    resolved_2 = available[1] if len(available) > 1 and cfg.logo2_position != "none" else None
     return resolved_1, resolved_2
 
 def calculate_grid_layout(position: str, cfg: PipelineConfig) -> tuple[Rect, Rect | None]:
@@ -73,17 +57,13 @@ def calculate_grid_layout(position: str, cfg: PipelineConfig) -> tuple[Rect, Rec
         "bottom-left":   (2, 0), "bottom-center": (2, 1), "bottom-right": (2, 2),
     }
 
-    row, col = grid_map.get(position, (2, 2))
+    row, col = grid_map.get(position, (1, 0))
     cam_rect = get_grid_tile(position, cfg.cam_box_w, cfg.cam_box_h, cfg.width, cfg.height)
 
-    if col == 2:
-        card_rect = Rect(80, 60, 1240, cfg.height - 60)
-    elif col == 0:
+    if col == 0:
         card_rect = Rect(680, 60, cfg.width - 80, cfg.height - 60)
-    elif row == 0:
-        card_rect = Rect(100, 380, cfg.width - 100, cfg.height - 60)
-    elif row == 2:
-        card_rect = Rect(100, 60, cfg.width - 100, 700)
+    elif col == 2:
+        card_rect = Rect(80, 60, 1240, cfg.height - 60)
     else:
         card_rect = Rect(80, 60, 1240, cfg.height - 60)
 
@@ -113,6 +93,7 @@ def draw_logo_tile(canvas: Image.Image, logo_path: Path, tile_rect: Rect, cfg: P
     x0, y0 = tile_rect.x0 * scale, tile_rect.y0 * scale
     x1, y1 = tile_rect.x1 * scale, tile_rect.y1 * scale
 
+    # Outer border bezel
     if cfg.logo_border:
         draw.rounded_rectangle(
             [x0 - 4 * scale, y0 - 4 * scale, x1 + 4 * scale, y1 + 4 * scale],
@@ -127,16 +108,44 @@ def draw_logo_tile(canvas: Image.Image, logo_path: Path, tile_rect: Rect, cfg: P
     max_h = (tile_rect.height - 32) * scale
     logo.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
 
+    # Apply subtle corner rounding to logo image to match the container
+    mask = Image.new("L", logo.size, 0)
+    mask_draw = ImageDraw.Draw(mask)
+    mask_draw.rounded_rectangle([0, 0, logo.width, logo.height], radius=14 * scale, fill=255)
+    logo.putalpha(mask)
+
     offset_x = x0 + ((tile_rect.width * scale) - logo.width) // 2
     offset_y = y0 + ((tile_rect.height * scale) - logo.height) // 2
     canvas.paste(logo, (offset_x, offset_y), logo)
+
+def parse_structured_content(raw_blurb: str) -> tuple[str, list[str]]:
+    """Splits blurb into a main narrative paragraph and individual bullet points."""
+    cleaned = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', raw_blurb.strip())
+    parts = cleaned.split("\n\n")
+
+    paragraph = ""
+    bullets = []
+
+    for p in parts:
+        lines = [l.strip() for l in p.splitlines() if l.strip()]
+        if any(l.startswith(('*', '-')) for l in lines):
+            for l in lines:
+                if l.startswith(('*', '-')):
+                    b_text = l.lstrip('*- ').strip()
+                    if b_text:
+                        bullets.append(b_text)
+        else:
+            if not paragraph:
+                paragraph = " ".join(lines)
+
+    return paragraph, bullets
 
 def render_topic_slide(
     topic: Topic,
     total_topics: int,
     output_path: Path,
     cfg: PipelineConfig,
-    position: str = "bottom-left"
+    position: str = "middle-left"
 ) -> Path:
     scale = 2
     canvas_w, canvas_h = cfg.width * scale, cfg.height * scale
@@ -145,19 +154,19 @@ def render_topic_slide(
 
     card_rect, cam_rect = calculate_grid_layout(position, cfg)
 
-    # Scaled Fonts
+    # Scaled typography
     font_meta = _load_font(18 * scale, bold=True)
     font_pill = _load_font(22 * scale, bold=True)
-    font_title = _load_font(48 * scale, bold=True)
-    font_blurb = _load_font(26 * scale, bold=False)
-    font_url = _load_font(24 * scale, bold=False)
+    font_title = _load_font(44 * scale, bold=True)
+    font_subhead = _load_font(22 * scale, bold=True)
+    font_body = _load_font(24 * scale, bold=False)
+    font_url = _load_font(21 * scale, bold=False)
 
-    # 1. Main Card Background
     cx0, cy0 = card_rect.x0 * scale, card_rect.y0 * scale
     cx1, cy1 = card_rect.x1 * scale, card_rect.y1 * scale
     draw.rounded_rectangle([cx0, cy0, cx1, cy1], radius=24 * scale, fill=cfg.card_color)
 
-    # 2. Camera Cutout Bezel
+    # Camera Slot Bezel
     if cam_rect:
         cam_x0, cam_y0 = cam_rect.x0 * scale, cam_rect.y0 * scale
         cam_x1, cam_y1 = cam_rect.x1 * scale, cam_rect.y1 * scale
@@ -168,7 +177,7 @@ def render_topic_slide(
             width=3 * scale
         )
 
-    # 3. Sidebar Logos
+    # Logo Tiles with smooth rounded corners
     pos1, pos2 = resolve_unoccupied_tiles(position, cfg)
     if pos1:
         tile1 = get_grid_tile(pos1, cfg.cam_box_w, cfg.cam_box_h, cfg.width, cfg.height)
@@ -177,88 +186,116 @@ def render_topic_slide(
         tile2 = get_grid_tile(pos2, cfg.cam_box_w, cfg.cam_box_h, cfg.width, cfg.height)
         draw_logo_tile(img, cfg.logo2_path, tile2, cfg, scale=scale)
 
-    bar_margin = 44 * scale
-    current_y = cy0 + 28 * scale
+    bar_margin = 46 * scale
+    usable_w = (cx1 - bar_margin) - (cx0 + bar_margin)
+    current_y = cy0 + 30 * scale
 
-    # 4. Top Episode Header (Title + Date)
+    # 1. Episode Header (Title + Date)
     if topic.post_title or topic.post_date:
-        # Date right aligned
         if topic.post_date:
             d_bbox = draw.textbbox((0, 0), topic.post_date, font=font_meta)
-            d_w = d_bbox[2] - d_bbox[0]
-            draw.text((cx1 - bar_margin - d_w, current_y), topic.post_date, fill=cfg.accent_color_rgb, font=font_meta)
+            draw.text((cx1 - bar_margin - (d_bbox[2] - d_bbox[0]), current_y), topic.post_date, fill=cfg.accent_color_rgb, font=font_meta)
 
-        # Title left aligned (truncated if too long to prevent date overlap)
         if topic.post_title:
-            max_title_chars = int((card_rect.width - 240) / 12)
+            max_title_chars = int((card_rect.width - 240) / 11)
             clean_title = (topic.post_title[:max_title_chars] + '...') if len(topic.post_title) > max_title_chars else topic.post_title
             draw.text((cx0 + bar_margin, current_y), clean_title.upper(), fill=cfg.sub_color, font=font_meta)
 
         current_y += 32 * scale
 
-    # 5. Segmented Progress Bar
+    # 2. Segmented Progress Bar
     bar_y0 = current_y
     bar_h = 7 * scale
-    bar_x0 = cx0 + bar_margin
-    bar_x1 = cx1 - bar_margin
-    total_bar_w = bar_x1 - bar_x0
+    total_bar_w = usable_w
     gap = 10 * scale
     segment_w = (total_bar_w - (gap * (total_topics - 1))) / total_topics
 
     for seg_idx in range(total_topics):
-        s_start = bar_x0 + seg_idx * (segment_w + gap)
+        s_start = (cx0 + bar_margin) + seg_idx * (segment_w + gap)
         s_end = s_start + segment_w
         seg_color = cfg.accent_color_rgb if seg_idx <= topic.index else cfg.inactive_seg_color
         draw.rounded_rectangle([s_start, bar_y0, s_end, bar_y0 + bar_h], radius=3 * scale, fill=seg_color)
 
-    # 6. Topic Pill Badge
+    current_y = bar_y0 + bar_h + 24 * scale
+
+    # 3. Dynamic Pill Badge
     pill_text = f"TOPIC {topic.index + 1:02d} OF {total_topics:02d}"
     t_bbox = draw.textbbox((0, 0), pill_text, font=font_pill)
-    t_width = t_bbox[2] - t_bbox[0]
-    t_height = t_bbox[3] - t_bbox[1]
+    pw = (t_bbox[2] - t_bbox[0]) + (36 * scale)
+    ph = (t_bbox[3] - t_bbox[1]) + (18 * scale)
 
-    pad_h = 20 * scale
-    pad_v = 10 * scale
-    pill_box_w = t_width + (pad_h * 2)
-    pill_box_h = t_height + (pad_v * 2)
+    draw.rounded_rectangle([cx0 + bar_margin, current_y, cx0 + bar_margin + pw, current_y + ph], radius=10 * scale, fill=cfg.accent_color_rgb)
+    draw.text((cx0 + bar_margin + 18 * scale, current_y + 8 * scale), pill_text, fill=(255, 255, 255), font=font_pill)
+    current_y += ph + 22 * scale
 
-    pill_x0 = cx0 + bar_margin
-    pill_y0 = bar_y0 + 26 * scale
-    pill_x1 = pill_x0 + pill_box_w
-    pill_y1 = pill_y0 + pill_box_h
-
-    draw.rounded_rectangle([pill_x0, pill_y0, pill_x1, pill_y1], radius=10 * scale, fill=cfg.accent_color_rgb)
-    draw.text((pill_x0 + pad_h, pill_y0 + pad_v - (2 * scale)), pill_text, fill=(255, 255, 255), font=font_pill)
-
-    # 7. Topic Title
-    wrap_w = max(26, int((card_rect.width - 100) / 26))
+    # 4. Clean Headline (wrapped appropriately)
+    wrap_w = max(28, int(usable_w / (26 * scale)))
     wrapped_title = textwrap.wrap(topic.title, width=wrap_w)
-    current_y = pill_y1 + 26 * scale
-
     for line in wrapped_title[:3]:
         draw.text((cx0 + bar_margin, current_y), line, fill=cfg.text_color, font=font_title)
-        current_y += 62 * scale
+        current_y += 56 * scale
 
-    # 8. Discussion Blurb & Bullets (Cleaned of Markdown Link Syntax)
-    if topic.blurb:
-        blurb_clean = topic.blurb.strip()
-        if blurb_clean.lower().startswith("blurb:"):
-            blurb_clean = blurb_clean[6:].strip()
+    current_y += 16 * scale
 
-        # Convert markdown links [text](url) -> text for display
-        blurb_clean = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', blurb_clean)
+    # 5. Content Rendering (Full-width narrative + Key Developments OR 2-column list)
+    paragraph, bullets = parse_structured_content(topic.blurb)
 
-        wrapped_blurb = textwrap.wrap(blurb_clean, width=max(36, int((card_rect.width - 100) / 16)))
-        current_y += 20 * scale
-        for line in wrapped_blurb[:5]:
-            draw.text((cx0 + bar_margin, current_y), line, fill=(185, 190, 200), font=font_blurb)
-            current_y += 42 * scale
+    if paragraph and bullets:
+        # Full-width narrative paragraph
+        for line in textwrap.wrap(paragraph, width=74)[:5]:
+            draw.text((cx0 + bar_margin, current_y), line, fill=(200, 205, 215), font=font_body)
+            current_y += 38 * scale
 
-    # 9. Source Citation Anchor
+        current_y += 18 * scale
+        draw.text((cx0 + bar_margin, current_y), "KEY DEVELOPMENTS:", fill=cfg.accent_color_rgb, font=font_subhead)
+        current_y += 30 * scale
+
+        # Top 4 link bullets formatted with bold bullets
+        for b in bullets[:4]:
+            b_wrapped = textwrap.wrap(b, width=70)
+            for i, bw in enumerate(b_wrapped[:2]):
+                prefix = "• " if i == 0 else "   "
+                color = (245, 245, 247) if i == 0 else (180, 185, 195)
+                draw.text((cx0 + bar_margin, current_y), prefix + bw, fill=color, font=font_body)
+                current_y += 36 * scale
+            current_y += 6 * scale
+
+    elif bullets and not paragraph:
+        # Two-column layout for financial / M&A deals
+        col1 = bullets[:7]
+        col2 = bullets[7:14]
+
+        col_w = (usable_w - 40 * scale) // 2
+        col1_x = cx0 + bar_margin
+        col2_x = cx0 + bar_margin + col_w + 40 * scale
+
+        y_left = current_y
+        for b in col1:
+            for i, line in enumerate(textwrap.wrap(b, width=34)[:2]):
+                prefix = "• " if i == 0 else "   "
+                draw.text((col1_x, y_left), prefix + line, fill=(230, 235, 245) if i == 0 else (175, 180, 190), font=font_body)
+                y_left += 34 * scale
+            y_left += 8 * scale
+
+        y_right = current_y
+        for b in col2:
+            for i, line in enumerate(textwrap.wrap(b, width=34)[:2]):
+                prefix = "• " if i == 0 else "   "
+                draw.text((col2_x, y_right), prefix + line, fill=(230, 235, 245) if i == 0 else (175, 180, 190), font=font_body)
+                y_right += 34 * scale
+            y_right += 8 * scale
+
+    elif paragraph:
+        # Prose-only topic
+        for line in textwrap.wrap(paragraph, width=74)[:12]:
+            draw.text((cx0 + bar_margin, current_y), line, fill=(200, 205, 215), font=font_body)
+            current_y += 38 * scale
+
+    # 6. Source Anchor Citation (Compact font ensures complete URL fits without truncation)
     if topic.url:
-        max_url_len = int(card_rect.width / 14)
+        max_url_len = int(usable_w / (14 * scale))
         clean_url = (topic.url[:max_url_len] + '...') if len(topic.url) > max_url_len else topic.url
-        draw.text((cx0 + bar_margin, cy1 - 60 * scale), f"Source: {clean_url}", fill=cfg.sub_color, font=font_url)
+        draw.text((cx0 + bar_margin, cy1 - 45 * scale), f"Source: {clean_url}", fill=cfg.sub_color, font=font_url)
 
     final_img = img.resize((cfg.width, cfg.height), resample=Image.Resampling.LANCZOS)
     output_path.parent.mkdir(parents=True, exist_ok=True)
