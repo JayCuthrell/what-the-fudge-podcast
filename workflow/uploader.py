@@ -49,3 +49,21 @@ class YouTubeUploader:
         request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
         response = request.execute()
         return response["id"]
+
+    def update_markdown_placeholder(self, filepath: Path, video_id: str) -> None:
+        """Finds PLACEHOLDER strings in the 11ty markdown file and replaces them with the live YouTube ID."""
+        if not filepath.exists():
+            print(f"⚠ Could not find markdown file to update: {filepath}")
+            return
+
+        content = filepath.read_text(encoding="utf-8")
+        
+        # Target the specific shortcode and link structures
+        updated_content = content.replace('slug="PLACEHOLDER"', f'slug="{video_id}"')
+        updated_content = updated_content.replace('youtu.be/PLACEHOLDER', f'youtu.be/{video_id}')
+        
+        if content != updated_content:
+            filepath.write_text(updated_content, encoding="utf-8")
+            print(f"✓ Successfully updated 11ty markdown with YouTube ID: {video_id}")
+        else:
+            print("⚠ 'PLACEHOLDER' string not found in the markdown file. No changes made.")

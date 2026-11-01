@@ -171,6 +171,9 @@ def run(
         uploader = YouTubeUploader(cfg)
         vid_id = uploader.upload(video_file, video_title, description)
         print(f"\n🚀 Live at: https://youtu.be/{vid_id}")
+        
+        # Update the 11ty post file with the new YouTube ID
+        uploader.update_markdown_placeholder(input_file, vid_id)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Podcast Teleprompter with 11ty Blog Post Ingestion")
