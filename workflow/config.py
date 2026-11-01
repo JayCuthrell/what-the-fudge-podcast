@@ -20,9 +20,9 @@ class PipelineConfig:
     client_secrets_path: Path = Path("client_secrets.json")
 
     # Brand Graphics
-    logo_path: Path = Path("wtf-podcast.png")       # Primary text logo
+    logo_path: Path = Path("wtf.png")       # Primary text logo
     logo_position: str = "auto"                    # "auto", specific tile, or "none"
-    logo2_path: Path = Path("wtf-badge.png")        # Secondary graphic / illustration badge
+    logo2_path: Path = Path("logo.png")        # Secondary graphic / illustration badge
     logo2_position: str = "auto"                   # "auto", specific tile, or "none"
     logo_card_bg: tuple = (28, 31, 38)
     logo_border: bool = True
@@ -49,7 +49,7 @@ class PipelineConfig:
     cam_box_w: int = 560
     cam_box_h: int = 315
     webcam_position: str = "bottom-left"
-    webcam_device: str = "2"                       # "2" for iPhone Continuity Camera, "0" for FaceTime HD
+    webcam_device: str = "0"                       # "2" for iPhone Continuity Camera, "0" for FaceTime HD
 
     # Encoding
     video_fps: int = 30
