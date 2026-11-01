@@ -4,6 +4,7 @@ import sys
 import time
 import tty
 import termios
+from pathlib import Path
 
 from config import PipelineConfig, VALID_WEBCAM_POSITIONS
 from content import parse_markdown, format_timestamp, build_youtube_description
@@ -25,18 +26,30 @@ def wait_for_key(allowed=('t', ' ')):
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
-def run(dry_run: bool = False, auto_interval: float = None, enable_webcam: bool = False, webcam_pos: str = "bottom-right"):
+def run(
+    markdown_path: Path = None,
+    dry_run: bool = False,
+    auto_interval: float = None,
+    enable_webcam: bool = False,
+    webcam_pos: str = "bottom-left"
+):
     cfg = PipelineConfig()
+    input_file = markdown_path if markdown_path else cfg.topics_file
 
     try:
-        topics = parse_markdown(cfg.topics_file)
+        topics = parse_markdown(input_file)
     except Exception as e:
         sys.exit(f"Error parsing Markdown: {e}")
 
     actual_cam_pos = webcam_pos if enable_webcam else "none"
 
-    # Step 1: Pre-render slides adapted to the chosen grid position
-    print(f"\n[1/5] Pre-rendering {len(topics)} slides (Layout: {actual_cam_pos})...")
+    # Step 1: Pre-render slides adapted to the 11ty post
+    print(f"\n[1/5] Ingesting '{input_file.name}' — Rendering {len(topics)} slides...")
+    if topics[0].post_title:
+        print(f"      Post Title: {topics[0].post_title}")
+    if topics[0].post_date:
+        print(f"      Post Date:  {topics[0].post_date}")
+
     slide_paths = []
     for t in topics:
         slide_out = cfg.slides_dir / f"slide_{t.index:02d}.png"
@@ -53,7 +66,7 @@ def run(dry_run: bool = False, auto_interval: float = None, enable_webcam: bool 
 
     os.system("clear")
     print("=" * 65)
-    print(f" PODCAST TELEPROMPTER | Webcam: {actual_cam_pos.upper()}")
+    print(f" PODCAST TELEPROMPTER | File: {input_file.name}")
     print("=" * 65)
 
     if auto_interval:
@@ -81,11 +94,13 @@ def run(dry_run: bool = False, auto_interval: float = None, enable_webcam: bool 
         os.system("clear")
         print("=" * 65)
         print(f" TOPIC {idx + 1} OF {len(topics)} | Marker: {tc_str} | Layout: {actual_cam_pos}")
+        if item.post_title:
+            print(f" EPISODE: {item.post_title[:60]}... ({item.post_date})")
         print("=" * 65)
         print(f"\nTITLE: {item.title}\n")
         if item.url:
-            print(f"LINK:  {item.url}\n")
-        print(f"BLURB:\n{item.blurb}\n")
+            print(f"ANCHOR: {item.url}\n")
+        print(f"TALKING POINTS:\n{item.blurb}\n")
         print("-" * 65)
 
         if idx < len(topics) - 1:
@@ -150,25 +165,35 @@ def run(dry_run: bool = False, auto_interval: float = None, enable_webcam: bool 
     print(description)
     print("--------------------------------\n")
 
+    video_title = topics[0].post_title if topics[0].post_title else f"Discussion: {topics[0].title}"
+
     if not dry_run and input("Upload to YouTube? (y/n): ").strip().lower() == 'y':
         uploader = YouTubeUploader(cfg)
-        vid_id = uploader.upload(video_file, f"Discussion: {topics[0].title}", description)
+        vid_id = uploader.upload(video_file, video_title, description)
         print(f"\n🚀 Live at: https://youtu.be/{vid_id}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Podcast Teleprompter with Rule-of-Thirds Webcam Inset")
+    parser = argparse.ArgumentParser(description="Podcast Teleprompter with 11ty Blog Post Ingestion")
+    parser.add_argument(
+        "--file", "-f",
+        type=str,
+        help="Path to 11ty post markdown file (e.g. ~/github/.../wtf-030.md). Defaults to config.topics_file."
+    )
     parser.add_argument("--dry-run", action="store_true", help="Run without microphone or YouTube upload.")
     parser.add_argument("--auto-advance", type=float, metavar="SEC", help="Hands-free advance interval.")
     parser.add_argument("--webcam", action="store_true", help="Enable webcam overlay inside a Rule-of-Thirds block.")
     parser.add_argument(
         "--webcam-pos",
         choices=VALID_WEBCAM_POSITIONS,
-        default="bottom-right",
-        help="Specify which of the 9 Rule of Thirds cells to anchor the camera (default: bottom-right)."
+        default="bottom-left",
+        help="Specify which of the 9 Rule of Thirds cells to anchor the camera (default: bottom-left)."
     )
     args = parser.parse_args()
 
+    selected_file = Path(args.file).expanduser().resolve() if args.file else None
+
     run(
+        markdown_path=selected_file,
         dry_run=args.dry_run,
         auto_interval=args.auto_advance,
         enable_webcam=args.webcam,
