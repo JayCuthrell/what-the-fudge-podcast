@@ -93,7 +93,6 @@ def draw_logo_tile(canvas: Image.Image, logo_path: Path, tile_rect: Rect, cfg: P
     x0, y0 = tile_rect.x0 * scale, tile_rect.y0 * scale
     x1, y1 = tile_rect.x1 * scale, tile_rect.y1 * scale
 
-    # Outer border bezel
     if cfg.logo_border:
         draw.rounded_rectangle(
             [x0 - 4 * scale, y0 - 4 * scale, x1 + 4 * scale, y1 + 4 * scale],
@@ -108,7 +107,7 @@ def draw_logo_tile(canvas: Image.Image, logo_path: Path, tile_rect: Rect, cfg: P
     max_h = (tile_rect.height - 32) * scale
     logo.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
 
-    # Apply subtle corner rounding to logo image to match the container
+    # Smooth rounded corners on image boundary to match bezel curves
     mask = Image.new("L", logo.size, 0)
     mask_draw = ImageDraw.Draw(mask)
     mask_draw.rounded_rectangle([0, 0, logo.width, logo.height], radius=14 * scale, fill=255)
@@ -118,8 +117,17 @@ def draw_logo_tile(canvas: Image.Image, logo_path: Path, tile_rect: Rect, cfg: P
     offset_y = y0 + ((tile_rect.height * scale) - logo.height) // 2
     canvas.paste(logo, (offset_x, offset_y), logo)
 
+def clean_header_title(title: str, max_chars: int = 74) -> str:
+    """Extracts the punchy episode subtitle to avoid redundant dates and truncations."""
+    match = re.search(r'What The Fudge(?:\s+for\s+[^:]+)?:?\s*(.*)', title, re.IGNORECASE)
+    sub = match.group(1).strip() if (match and match.group(1).strip()) else title.strip()
+    sub_upper = sub.upper()
+    if len(sub_upper) > max_chars:
+        return sub_upper[:max_chars - 3].rstrip(" ,-:") + "..."
+    return sub_upper
+
 def parse_structured_content(raw_blurb: str) -> tuple[str, list[str]]:
-    """Splits blurb into a main narrative paragraph and individual bullet points."""
+    """Separates blurb into narrative paragraph and clean bullet list items."""
     cleaned = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', raw_blurb.strip())
     parts = cleaned.split("\n\n")
 
@@ -159,8 +167,9 @@ def render_topic_slide(
     font_pill = _load_font(22 * scale, bold=True)
     font_title = _load_font(44 * scale, bold=True)
     font_subhead = _load_font(22 * scale, bold=True)
-    font_body = _load_font(24 * scale, bold=False)
-    font_url = _load_font(21 * scale, bold=False)
+    font_body = _load_font(23 * scale, bold=False)
+    font_deal = _load_font(20 * scale, bold=False)
+    font_url = _load_font(20 * scale, bold=False)
 
     cx0, cy0 = card_rect.x0 * scale, card_rect.y0 * scale
     cx1, cy1 = card_rect.x1 * scale, card_rect.y1 * scale
@@ -177,7 +186,7 @@ def render_topic_slide(
             width=3 * scale
         )
 
-    # Logo Tiles with smooth rounded corners
+    # Logo Tiles with smooth corner radius
     pos1, pos2 = resolve_unoccupied_tiles(position, cfg)
     if pos1:
         tile1 = get_grid_tile(pos1, cfg.cam_box_w, cfg.cam_box_h, cfg.width, cfg.height)
@@ -190,16 +199,15 @@ def render_topic_slide(
     usable_w = (cx1 - bar_margin) - (cx0 + bar_margin)
     current_y = cy0 + 30 * scale
 
-    # 1. Episode Header (Title + Date)
+    # 1. Episode Header (Subtitle + Date)
     if topic.post_title or topic.post_date:
         if topic.post_date:
             d_bbox = draw.textbbox((0, 0), topic.post_date, font=font_meta)
             draw.text((cx1 - bar_margin - (d_bbox[2] - d_bbox[0]), current_y), topic.post_date, fill=cfg.accent_color_rgb, font=font_meta)
 
         if topic.post_title:
-            max_title_chars = int((card_rect.width - 240) / 11)
-            clean_title = (topic.post_title[:max_title_chars] + '...') if len(topic.post_title) > max_title_chars else topic.post_title
-            draw.text((cx0 + bar_margin, current_y), clean_title.upper(), fill=cfg.sub_color, font=font_meta)
+            clean_sub = clean_header_title(topic.post_title, max_chars=74)
+            draw.text((cx0 + bar_margin, current_y), clean_sub, fill=(156, 163, 175), font=font_meta)
 
         current_y += 32 * scale
 
@@ -228,8 +236,8 @@ def render_topic_slide(
     draw.text((cx0 + bar_margin + 18 * scale, current_y + 8 * scale), pill_text, fill=(255, 255, 255), font=font_pill)
     current_y += ph + 22 * scale
 
-    # 4. Clean Headline (wrapped appropriately)
-    wrap_w = max(28, int(usable_w / (26 * scale)))
+    # 4. Clean Headline
+    wrap_w = max(28, int(usable_w / (25 * scale)))
     wrapped_title = textwrap.wrap(topic.title, width=wrap_w)
     for line in wrapped_title[:3]:
         draw.text((cx0 + bar_margin, current_y), line, fill=cfg.text_color, font=font_title)
@@ -237,33 +245,34 @@ def render_topic_slide(
 
     current_y += 16 * scale
 
-    # 5. Content Rendering (Full-width narrative + Key Developments OR 2-column list)
+    # 5. Content Rendering (Full Narrative + Full Bullets OR 2-Column Deals)
     paragraph, bullets = parse_structured_content(topic.blurb)
 
     if paragraph and bullets:
-        # Full-width narrative paragraph
-        for line in textwrap.wrap(paragraph, width=74)[:5]:
-            draw.text((cx0 + bar_margin, current_y), line, fill=(200, 205, 215), font=font_body)
-            current_y += 38 * scale
+        # Full paragraph wrapping at 76 chars
+        p_lines = textwrap.wrap(paragraph, width=76)
+        for line in p_lines[:7]:
+            draw.text((cx0 + bar_margin, current_y), line, fill=(205, 210, 220), font=font_body)
+            current_y += 37 * scale
 
-        current_y += 18 * scale
+        current_y += 16 * scale
         draw.text((cx0 + bar_margin, current_y), "KEY DEVELOPMENTS:", fill=cfg.accent_color_rgb, font=font_subhead)
         current_y += 30 * scale
 
-        # Top 4 link bullets formatted with bold bullets
+        # Bullets allow up to 3 lines per bullet so figures are never cut off
         for b in bullets[:4]:
-            b_wrapped = textwrap.wrap(b, width=70)
-            for i, bw in enumerate(b_wrapped[:2]):
+            b_wrapped = textwrap.wrap(b, width=74)
+            for i, bw in enumerate(b_wrapped[:3]):
                 prefix = "• " if i == 0 else "   "
-                color = (245, 245, 247) if i == 0 else (180, 185, 195)
+                color = (245, 245, 247) if i == 0 else (185, 190, 200)
                 draw.text((cx0 + bar_margin, current_y), prefix + bw, fill=color, font=font_body)
-                current_y += 36 * scale
-            current_y += 6 * scale
+                current_y += 35 * scale
+            current_y += 8 * scale
 
     elif bullets and not paragraph:
-        # Two-column layout for financial / M&A deals
-        col1 = bullets[:7]
-        col2 = bullets[7:14]
+        # Balanced 2-column layout for pure deal/funding lists
+        col1 = bullets[:6]
+        col2 = bullets[6:12]
 
         col_w = (usable_w - 40 * scale) // 2
         col1_x = cx0 + bar_margin
@@ -271,31 +280,34 @@ def render_topic_slide(
 
         y_left = current_y
         for b in col1:
-            for i, line in enumerate(textwrap.wrap(b, width=34)[:2]):
+            b_wrapped = textwrap.wrap(b, width=41)
+            for i, line in enumerate(b_wrapped[:3]):
                 prefix = "• " if i == 0 else "   "
-                draw.text((col1_x, y_left), prefix + line, fill=(230, 235, 245) if i == 0 else (175, 180, 190), font=font_body)
-                y_left += 34 * scale
-            y_left += 8 * scale
+                color = (245, 245, 247) if i == 0 else (185, 190, 200)
+                draw.text((col1_x, y_left), prefix + line, fill=color, font=font_deal)
+                y_left += 32 * scale
+            y_left += 10 * scale
 
         y_right = current_y
         for b in col2:
-            for i, line in enumerate(textwrap.wrap(b, width=34)[:2]):
+            b_wrapped = textwrap.wrap(b, width=41)
+            for i, line in enumerate(b_wrapped[:3]):
                 prefix = "• " if i == 0 else "   "
-                draw.text((col2_x, y_right), prefix + line, fill=(230, 235, 245) if i == 0 else (175, 180, 190), font=font_body)
-                y_right += 34 * scale
-            y_right += 8 * scale
+                color = (245, 245, 247) if i == 0 else (185, 190, 200)
+                draw.text((col2_x, y_right), prefix + line, fill=color, font=font_deal)
+                y_right += 32 * scale
+            y_right += 10 * scale
 
     elif paragraph:
-        # Prose-only topic
-        for line in textwrap.wrap(paragraph, width=74)[:12]:
-            draw.text((cx0 + bar_margin, current_y), line, fill=(200, 205, 215), font=font_body)
-            current_y += 38 * scale
+        for line in textwrap.wrap(paragraph, width=76)[:12]:
+            draw.text((cx0 + bar_margin, current_y), line, fill=(205, 210, 220), font=font_body)
+            current_y += 37 * scale
 
-    # 6. Source Anchor Citation (Compact font ensures complete URL fits without truncation)
+    # 6. Source Anchor Citation (Fits complete URL without truncation)
     if topic.url:
-        max_url_len = int(usable_w / (14 * scale))
+        max_url_len = int(usable_w / (11 * scale))
         clean_url = (topic.url[:max_url_len] + '...') if len(topic.url) > max_url_len else topic.url
-        draw.text((cx0 + bar_margin, cy1 - 45 * scale), f"Source: {clean_url}", fill=cfg.sub_color, font=font_url)
+        draw.text((cx0 + bar_margin, cy1 - 42 * scale), f"Source: {clean_url}", fill=cfg.sub_color, font=font_url)
 
     final_img = img.resize((cfg.width, cfg.height), resample=Image.Resampling.LANCZOS)
     output_path.parent.mkdir(parents=True, exist_ok=True)
